@@ -1,0 +1,58 @@
+"""Gas level prediction using Linear Regression.
+
+Reads gas readings exported from ThingSpeak, fits a Linear Regression model
+on elapsed time, evaluates it on the most recent readings, and forecasts
+the next few values.
+"""
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error
+
+CSV_FILE = "gas_data.csv"
+FORECAST_STEPS = 10      # how many future readings to predict
+INTERVAL_SEC = 15        # sensor upload interval
+
+# 1. Load data and convert timestamps to elapsed seconds
+df = pd.read_csv(CSV_FILE, parse_dates=["created_at"])
+df["seconds"] = (df["created_at"] - df["created_at"].iloc[0]).dt.total_seconds()
+X = df[["seconds"]]
+y = df["gas_value"]
+
+# 2. Chronological train/test split (no shuffling for time-ordered data)
+split = int(len(df) * 0.8)
+X_train, X_test = X.iloc[:split], X.iloc[split:]
+y_train, y_test = y.iloc[:split], y.iloc[split:]
+
+model = LinearRegression().fit(X_train, y_train)
+pred_test = model.predict(X_test)
+print(f"Train readings: {len(X_train)} | Test readings: {len(X_test)}")
+print(f"Test MAE: {mean_absolute_error(y_test, pred_test):.1f}")
+print(f"Test MAPE: {mean_absolute_percentage_error(y_test, pred_test) * 100:.1f}%")
+# R2 is not reported: the test window is nearly flat, so R2 is misleading there.
+
+# 3. Refit on all data and forecast the next readings
+model = LinearRegression().fit(X, y)
+last = df["seconds"].iloc[-1]
+future_t = np.arange(1, FORECAST_STEPS + 1) * INTERVAL_SEC + last
+future_pred = np.clip(model.predict(pd.DataFrame({"seconds": future_t})), 0, None)
+
+print(f"\nTrend: {model.coef_[0]:.3f} gas units per second")
+print(f"Forecast for next {FORECAST_STEPS} readings ({INTERVAL_SEC}s apart):")
+for i, v in enumerate(future_pred, 1):
+    print(f"  +{i * INTERVAL_SEC:>3}s -> {v:.0f}")
+
+# 4. Plot
+plt.figure(figsize=(9, 5))
+plt.plot(df["seconds"], y, "o-", label="Actual readings", markersize=4)
+plt.plot(df["seconds"], model.predict(X), "--", label="Linear fit")
+plt.plot(future_t, future_pred, "s", color="red", label="Forecast")
+plt.xlabel("Elapsed time (s)")
+plt.ylabel("Gas sensor value (analog)")
+plt.title("MQ Gas Sensor: Linear Regression Forecast")
+plt.legend()
+plt.grid(alpha=0.3)
+plt.tight_layout()
+plt.savefig("gas_forecast.png", dpi=150)
+plt.show()
